@@ -1,5 +1,10 @@
 # F&O app secret expiry
 
+[![Tests](https://github.com/DynAax-AB/dynaax-d365fo-secret-expiry/actions/workflows/test.yml/badge.svg)](https://github.com/DynAax-AB/dynaax-d365fo-secret-expiry/actions/workflows/test.yml)
+[![PowerShell 7+](https://img.shields.io/badge/PowerShell-7%2B-5391FE?logo=powershell&logoColor=white)](https://learn.microsoft.com/powershell/scripting/install/installing-powershell)
+[![Read only](https://img.shields.io/badge/access-read%20only-2ea44f)](#safe-to-run)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+
 A free, read-only PowerShell script that lists Entra app secrets and
 certificates that are about to expire, and **shows which Dynamics 365 Finance
 and Supply Chain Management (F&O) environments depend on each one.**
@@ -36,6 +41,48 @@ app registrations in Entra. The F&O team gets its own list first:
 
 It also flags secrets that **never expire** or are valid for **more than two
 years**, which most security teams want to know about.
+
+## How it works
+
+```mermaid
+flowchart LR
+    subgraph cloud["☁️ Your Microsoft cloud"]
+        direction TB
+        entra["🔐 <b>Entra ID</b><br/>app registrations,<br/>secrets and certificates"]
+        fo["🏭 <b>F&O environments</b><br/>Microsoft Entra applications"]
+    end
+    export["📥 <b>CSV export</b> of that form<br/>if an environment can't be read"]
+    subgraph pc["💻 Your machine"]
+        direction TB
+        script["⚙️ <b>Get-FoAppSecretExpiry.ps1</b><br/>matches each app to the<br/>F&O environments that trust it"]
+        html["📊 <b>HTML report</b><br/>F&O apps first, by days left"]
+        csv["📄 <b>CSV</b><br/>for Excel"]
+    end
+    teams["💬 <b>Teams channel</b><br/>summary card"]
+
+    entra -- "Microsoft Graph · read only" --> script
+    fo -- "OData · read only" --> script
+    export -.-> script
+    script --> html
+    script --> csv
+    script -. "optional · off by default" .-> teams
+
+    classDef source fill:#dbeafe,stroke:#2563eb,stroke-width:2px,color:#0f172a
+    classDef fo fill:#ede9fe,stroke:#7c3aed,stroke-width:2px,color:#0f172a
+    classDef tool fill:#ccfbf1,stroke:#0d9488,stroke-width:2px,color:#0f172a
+    classDef output fill:#dcfce7,stroke:#16a34a,stroke-width:2px,color:#0f172a
+    classDef optional fill:#fef3c7,stroke:#d97706,stroke-width:2px,stroke-dasharray:5 4,color:#0f172a
+    class entra source
+    class fo fo
+    class script tool
+    class html,csv output
+    class export,teams optional
+    style cloud fill:#3b82f614,stroke:#60a5fa,color:#3b82f6
+    style pc fill:#22c55e14,stroke:#4ade80,color:#16a34a
+```
+
+The script only reads. It runs on your own machine, and the report stays there unless you
+turn on the Teams post.
 
 ## Try it in one minute
 
