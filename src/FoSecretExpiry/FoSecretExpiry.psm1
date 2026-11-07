@@ -256,6 +256,42 @@ function Import-FoAadClientExport {
     }
 }
 
+# Tenants Microsoft registers its own services in. An app owned by one of these
+# is a Microsoft service: Microsoft manages its secrets.
+$script:MicrosoftTenantIds = @(
+    'f8cdef31-a31e-4b4a-93e4-5f571e91255a' # Microsoft Services
+    '72f988bf-86f1-41af-91ab-2d7cd011db47' # Microsoft
+)
+
+function Resolve-AppOwner {
+    <#
+    .SYNOPSIS
+        For apps F&O trusts that aren't registered in this tenant, finds out
+        who owns them from the tenant's service principals (enterprise apps):
+        Microsoft, another organisation, or unknown. Read only.
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][AllowEmptyCollection()][object[]] $App)
+    foreach ($a in $App) {
+        $owner = 'Unknown'
+        $name = $a.Name
+        if ("$($a.ClientId)" -match '^[0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}$') {
+            $sp = $null
+            try {
+                $sp = Get-MgServicePrincipal -Filter "appId eq '$($a.ClientId)'" -Property 'appId,displayName,appOwnerOrganizationId' -ErrorAction Stop |
+                    Select-Object -First 1
+            }
+            catch { Write-Verbose "Could not look up $($a.ClientId): $($_.Exception.Message)" }
+            if ($sp) {
+                $org = "$(Get-Value $sp 'AppOwnerOrganizationId')".ToLowerInvariant()
+                $owner = if ($org -in $script:MicrosoftTenantIds) { 'Microsoft' } else { 'Other organisation' }
+                if (-not $name) { $name = Get-Value $sp 'DisplayName' }
+            }
+        }
+        [pscustomobject]@{ ClientId = $a.ClientId; Name = $name; UsedBy = $a.UsedBy; Owner = $owner }
+    }
+}
+
 # --- Combining --------------------------------------------------------------
 
 function Merge-FoUsage {
@@ -419,16 +455,38 @@ function New-ExpiryReportHtml {
     }) -join ''
     if (-not $envHtml) { $envHtml = '<li class="bad">No F&amp;O environments were read. Every app shows under "Other apps".</li>' }
 
-    $missingHtml = if ($NotFoundInTenant.Count -gt 0) {
-        $items = ($NotFoundInTenant | ForEach-Object {
+    $ownerOf = { param($m) $p = $m.PSObject.Properties['Owner']; if ($p) { "$($p.Value)" } else { 'Unknown' } }
+    $vendorApps = @($NotFoundInTenant | Where-Object { (& $ownerOf $_) -eq 'Other organisation' })
+    $unknownApps = @($NotFoundInTenant | Where-Object { (& $ownerOf $_) -notin 'Microsoft', 'Other organisation' })
+    $microsoftApps = @($NotFoundInTenant | Where-Object { (& $ownerOf $_) -eq 'Microsoft' })
+    $appTable = { param($apps)
+        $items = ($apps | ForEach-Object {
             "<tr><td><strong>$(& $e $_.Name)</strong><br><span class=""muted"">$(& $e $_.ClientId)</span></td><td>$(& $e $_.UsedBy)</td></tr>"
         }) -join ''
-        @"
-<h2>Registered in F&amp;O, but not found in this tenant</h2>
-<p class="lead">F&amp;O trusts these apps, but they aren't app registrations in this tenant. They're often ISV or partner apps registered in the vendor's own tenant, so their secrets are the vendor's to renew. Ask the vendor when they expire, or remove the registration in F&amp;O if it's no longer used.</p>
-<div class="scroll"><table><thead><tr><th>Name in F&amp;O</th><th>Used by</th></tr></thead><tbody>$items</tbody></table></div>
+        "<div class=""scroll""><table><thead><tr><th>Name in F&amp;O</th><th>Used by</th></tr></thead><tbody>$items</tbody></table></div>"
+    }
+    $missingHtml = ''
+    if ($vendorApps.Count -gt 0) {
+        $missingHtml += @"
+<h2>Apps from other organisations</h2>
+<p class="lead">F&amp;O trusts these apps, but they're registered in another organisation's tenant, usually an ISV or partner. Their secrets are the vendor's to renew, so this report can't see the dates. Ask the vendor when they expire.</p>
+$(& $appTable $vendorApps)
 "@
-    } else { '' }
+    }
+    if ($unknownApps.Count -gt 0) {
+        $missingHtml += @"
+<h2>Apps not set up in this tenant</h2>
+<p class="lead">F&amp;O trusts these apps, but this tenant has no record of them, so the report can't tell who owns them or when their secrets expire. Many are services Microsoft runs for F&amp;O itself (such as Financial reporting, Copilot, Commerce or Power Platform), which F&amp;O registers on its own. Others may be ISV apps or old test entries. <strong>Don't remove any of them in F&amp;O until you know what it is</strong>: removing a Microsoft service's entry can stop that feature working.</p>
+$(& $appTable $unknownApps)
+"@
+    }
+    if ($microsoftApps.Count -gt 0) {
+        $names = ($microsoftApps | Sort-Object Name | ForEach-Object { & $e $(if ($_.Name) { $_.Name } else { $_.ClientId }) }) -join ', '
+        $missingHtml += @"
+<details class="ms"><summary>$($microsoftApps.Count) Microsoft services registered in F&amp;O (no action needed)</summary>
+<p class="muted">Microsoft manages the secrets of these apps: $names.</p></details>
+"@
+    }
 
     $card = { param($label, $value, $cls) "<div class=""card $cls""><div class=""value"">$value</div><div class=""label"">$label</div></div>" }
 
@@ -466,6 +524,8 @@ td.num { text-align:right; font-variant-numeric:tabular-nums } td.date { white-s
 .flag { display:inline-block; font-size:11px; color:var(--muted); border:1px dashed var(--line); border-radius:6px; padding:0 6px; margin-top:2px }
 .warn { color:var(--d60); font-size:12px } .empty { color:var(--muted) }
 footer { margin-top:32px; color:var(--muted); font-size:12px }
+details.ms { margin:18px 0 0; background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:10px 14px }
+details.ms summary { cursor:pointer; font-weight:600 }
 </style>
 </head>
 <body><main>
@@ -601,12 +661,19 @@ function New-DemoData {
         [pscustomobject]@{ Environment = $uat; EnvironmentUrl = 'https://contoso-uat.sandbox.operations.dynamics.com'; ClientId = '1b0c6a3e-2f7d-4c55-9e0a-5d7f1a9c0005'; Name = 'DW export'; UserId = 'DWEXPORT' }
         [pscustomobject]@{ Environment = $prod; EnvironmentUrl = 'https://contoso-prod.operations.dynamics.com'; ClientId = '1b0c6a3e-2f7d-4c55-9e0a-5d7f1a9c0006'; Name = 'Expenses'; UserId = 'EXPENSES' }
         [pscustomobject]@{ Environment = $prod; EnvironmentUrl = 'https://contoso-prod.operations.dynamics.com'; ClientId = '9f8e7d6c-0000-4000-8000-000000000a01'; Name = 'Warehouse app (vendor)'; UserId = 'WMSVENDOR' }
+        [pscustomobject]@{ Environment = $prod; EnvironmentUrl = 'https://contoso-prod.operations.dynamics.com'; ClientId = '9f8e7d6c-0000-4000-8000-000000000b01'; Name = 'FinancialReportsApp'; UserId = 'FinancialReportsApp' }
+        [pscustomobject]@{ Environment = $prod; EnvironmentUrl = 'https://contoso-prod.operations.dynamics.com'; ClientId = '9f8e7d6c-0000-4000-8000-000000000b02'; Name = 'PowerPlatformApplication'; UserId = 'PowerPlatformApp' }
     )
     [pscustomobject]@{
         Applications      = $apps
         FoClients         = $clients
+        AppOwners         = @{
+            '9f8e7d6c-0000-4000-8000-000000000a01' = 'Other organisation'
+            '9f8e7d6c-0000-4000-8000-000000000b01' = 'Microsoft'
+            '9f8e7d6c-0000-4000-8000-000000000b02' = 'Microsoft'
+        }
         EnvironmentStatus = @(
-            [pscustomobject]@{ Environment = $prod; Ok = $true; Message = '7 apps registered' }
+            [pscustomobject]@{ Environment = $prod; Ok = $true; Message = '9 apps registered' }
             [pscustomobject]@{ Environment = $uat; Ok = $true; Message = '2 apps registered' }
         )
     }
@@ -616,7 +683,7 @@ Export-ModuleMember -Function @(
     'ConvertTo-FoEnvironmentUrl', 'Get-FoEnvironmentName', 'Get-ExpiryStatus',
     'Get-EntraApplication', 'ConvertTo-CredentialRow',
     'Get-FoAccessToken', 'Get-FoAadClient', 'Import-FoAadClientExport',
-    'Merge-FoUsage', 'Select-ReportRow', 'Get-ReportSummary', 'ConvertTo-CsvRow',
+    'Merge-FoUsage', 'Resolve-AppOwner', 'Select-ReportRow', 'Get-ReportSummary', 'ConvertTo-CsvRow',
     'New-ExpiryReportHtml', 'New-TeamsWorkflowPayload', 'Send-TeamsWorkflowMessage',
     'New-DemoData'
 )

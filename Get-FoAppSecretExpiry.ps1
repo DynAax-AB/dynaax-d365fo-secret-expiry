@@ -101,18 +101,26 @@ else {
             throw "The $module module is missing. Install it with: Install-Module Microsoft.Graph.Applications -Scope CurrentUser"
         }
     }
-    Write-Host 'Signing in to Microsoft Graph (read only: Application.Read.All)...'
-    $graphArgs = @{ NoWelcome = $true }
-    if ($TenantId) { $graphArgs.TenantId = $TenantId }
-    if ($PSCmdlet.ParameterSetName -eq 'Unattended') {
-        $graphArgs.ClientId = $ClientId
-        $graphArgs.CertificateThumbprint = $CertificateThumbprint
+    $context = Get-MgContext
+    $reuse = $PSCmdlet.ParameterSetName -ne 'Unattended' -and $context -and 'Application.Read.All' -in $context.Scopes -and
+        (-not $TenantId -or $context.TenantId -eq $TenantId)
+    if ($reuse) {
+        Write-Host 'Using the existing Microsoft Graph sign-in.'
     }
     else {
-        $graphArgs.Scopes = 'Application.Read.All'
+        Write-Host 'Signing in to Microsoft Graph (read only: Application.Read.All)...'
+        $graphArgs = @{ NoWelcome = $true }
+        if ($TenantId) { $graphArgs.TenantId = $TenantId }
+        if ($PSCmdlet.ParameterSetName -eq 'Unattended') {
+            $graphArgs.ClientId = $ClientId
+            $graphArgs.CertificateThumbprint = $CertificateThumbprint
+        }
+        else {
+            $graphArgs.Scopes = 'Application.Read.All'
+        }
+        Connect-MgGraph @graphArgs | Out-Null
+        $context = Get-MgContext
     }
-    Connect-MgGraph @graphArgs | Out-Null
-    $context = Get-MgContext
     $tenantLabel = "Tenant $($context.TenantId)"
 
     Write-Host 'Reading app registrations...'
@@ -124,15 +132,24 @@ else {
         if (-not (Get-Module -ListAvailable -Name 'Az.Accounts')) {
             throw 'The Az.Accounts module is missing. It is used to sign in to F&O. Install it with: Install-Module Az.Accounts -Scope CurrentUser'
         }
-        Write-Host 'Signing in for F&O...'
-        $azArgs = @{ WarningAction = 'SilentlyContinue' }
-        if ($TenantId) { $azArgs.Tenant = $TenantId }
-        if ($PSCmdlet.ParameterSetName -eq 'Unattended') {
-            $azArgs.ServicePrincipal = $true
-            $azArgs.ApplicationId = $ClientId
-            $azArgs.CertificateThumbprint = $CertificateThumbprint
+        $azContext = Get-AzContext -ErrorAction SilentlyContinue
+        if ($PSCmdlet.ParameterSetName -ne 'Unattended' -and $azContext -and (-not $TenantId -or $azContext.Tenant.Id -eq $TenantId)) {
+            Write-Host 'Using the existing sign-in for F&O.'
         }
-        Connect-AzAccount @azArgs | Out-Null
+        else {
+            Write-Host 'Signing in for F&O...'
+            Update-AzConfig -LoginExperienceV2 Off -Scope Process -WarningAction SilentlyContinue | Out-Null
+            # The macOS sign-in broker only works from an app's main thread, so use the browser instead.
+            if (-not $IsWindows) { Update-AzConfig -EnableLoginByWam $false -Scope Process -WarningAction SilentlyContinue | Out-Null }
+            $azArgs = @{ WarningAction = 'SilentlyContinue' }
+            if ($TenantId) { $azArgs.Tenant = $TenantId }
+            if ($PSCmdlet.ParameterSetName -eq 'Unattended') {
+                $azArgs.ServicePrincipal = $true
+                $azArgs.ApplicationId = $ClientId
+                $azArgs.CertificateThumbprint = $CertificateThumbprint
+            }
+            Connect-AzAccount @azArgs | Out-Null
+        }
 
         foreach ($url in $FoEnvironmentUrl) {
             $environment = $url
@@ -172,6 +189,13 @@ foreach ($file in $FoExportFile) {
 # --- Combine and write the report ---
 $rows = @(ConvertTo-CredentialRow -Application $applications -Now $now -LongLivedDays $LongLivedDays)
 $merged = Merge-FoUsage -Row $rows -FoClient $foClients.ToArray()
+if ($Demo) {
+    $notInTenant = @($merged.NotFoundInTenant | ForEach-Object {
+        [pscustomobject]@{ ClientId = $_.ClientId; Name = $_.Name; UsedBy = $_.UsedBy; Owner = $demoData.AppOwners[$_.ClientId] } })
+}
+else {
+    $notInTenant = @(Resolve-AppOwner -App $merged.NotFoundInTenant)
+}
 $reportRows = @(Select-ReportRow -Row $merged.Rows -IncludeAll:$IncludeAll)
 
 New-Item -ItemType Directory -Path $OutputFolder -Force | Out-Null
@@ -179,7 +203,7 @@ $stamp = $now.ToString('yyyyMMdd-HHmm')
 $htmlPath = Join-Path $OutputFolder "app-secret-expiry-$stamp.html"
 $csvPath = Join-Path $OutputFolder "app-secret-expiry-$stamp.csv"
 
-New-ExpiryReportHtml -Row $reportRows -NotFoundInTenant $merged.NotFoundInTenant `
+New-ExpiryReportHtml -Row $reportRows -NotFoundInTenant $notInTenant `
     -EnvironmentStatus $environmentStatus.ToArray() -GeneratedAt $now -TenantLabel $tenantLabel `
     -LongLivedDays $LongLivedDays | Set-Content -LiteralPath $htmlPath -Encoding utf8
 ConvertTo-CsvRow -Row $reportRows | Export-Csv -LiteralPath $csvPath -NoTypeInformation -Encoding utf8
@@ -188,8 +212,17 @@ $summary = Get-ReportSummary -Row $reportRows
 Write-Host ''
 Write-Host "F&O apps: $($summary.FoExpired) expired, $($summary.FoWithin90) expiring within 90 days."
 Write-Host "All apps: $($summary.Expired) expired, $($summary.Within30) within 30 days, $($summary.Within60) within 60, $($summary.Within90) within 90; $($summary.NeverOrLong) never expire or are long-lived."
-if ($merged.NotFoundInTenant.Count -gt 0) {
-    Write-Host "$($merged.NotFoundInTenant.Count) app(s) registered in F&O are not in this tenant (often ISV apps). See the report."
+$vendorCount = @($notInTenant | Where-Object Owner -eq 'Other organisation').Count
+$microsoftCount = @($notInTenant | Where-Object Owner -eq 'Microsoft').Count
+$unknownCount = $notInTenant.Count - $vendorCount - $microsoftCount
+if ($vendorCount -gt 0) {
+    Write-Host "$vendorCount app(s) registered in F&O belong to other organisations (often ISVs). Ask the vendor about their secrets. See the report."
+}
+if ($unknownCount -gt 0) {
+    Write-Host "$unknownCount app(s) registered in F&O are not set up in this tenant. Many are Microsoft's own F&O services. See the report before removing any."
+}
+if ($microsoftCount -gt 0) {
+    Write-Host "$microsoftCount Microsoft service(s) registered in F&O. Microsoft manages their secrets."
 }
 Write-Host "Report: $htmlPath"
 Write-Host "CSV:    $csvPath"

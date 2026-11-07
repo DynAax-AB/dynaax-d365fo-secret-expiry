@@ -72,7 +72,7 @@ PowerShellVersion = '7.0'
 FunctionsToExport = 'ConvertTo-FoEnvironmentUrl', 'Get-FoEnvironmentName', 
                'Get-ExpiryStatus', 'Get-EntraApplication', 'ConvertTo-CredentialRow', 
                'Get-FoAccessToken', 'Get-FoAadClient', 'Import-FoAadClientExport', 
-               'Merge-FoUsage', 'Select-ReportRow', 'Get-ReportSummary', 
+               'Merge-FoUsage', 'Resolve-AppOwner', 'Select-ReportRow', 'Get-ReportSummary', 
                'ConvertTo-CsvRow', 'New-ExpiryReportHtml', 
                'New-TeamsWorkflowPayload', 'Send-TeamsWorkflowMessage', 
                'New-DemoData'

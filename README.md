@@ -25,8 +25,13 @@ app registrations in Entra. The F&O team gets its own list first:
 
 - **Used by F&O**: every app an F&O environment trusts, with the environment
   and the F&O user it runs as, sorted by days left.
-- **Registered in F&O but not in this tenant**: usually ISV or partner apps
-  whose secrets the vendor manages. Worth asking the vendor about.
+- **Apps from other organisations**: apps F&O trusts that are registered in an
+  ISV's or partner's own tenant. The vendor manages their secrets, so ask them.
+- **Apps not set up in this tenant**: apps F&O trusts that your tenant has no
+  record of. Many are services Microsoft runs for F&O itself (Financial
+  reporting, Copilot, Commerce and so on). The report warns not to remove them
+  until you know what they are. Microsoft services the tenant does know about
+  are listed apart, because Microsoft manages their secrets.
 - **Other apps** that are expired or expire within 90 days.
 
 It also flags secrets that **never expire** or are valid for **more than two
@@ -37,8 +42,8 @@ years**, which most security teams want to know about.
 No sign-in needed. With [PowerShell 7](https://learn.microsoft.com/powershell/scripting/install/installing-powershell):
 
 ```powershell
-git clone <repository-url>
-cd d365fo-app-secret-expiry
+git clone https://github.com/DynAax-AB/d365fo-secret-expiry.git
+cd d365fo-secret-expiry
 ./Get-FoAppSecretExpiry.ps1 -Demo
 ```
 
