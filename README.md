@@ -42,8 +42,8 @@ years**, which most security teams want to know about.
 No sign-in needed. With [PowerShell 7](https://learn.microsoft.com/powershell/scripting/install/installing-powershell):
 
 ```powershell
-git clone https://github.com/DynAax-AB/d365fo-secret-expiry.git
-cd d365fo-secret-expiry
+git clone https://github.com/DynAax-AB/dynaax-d365fo-secret-expiry.git
+cd dynaax-d365fo-secret-expiry
 ./Get-FoAppSecretExpiry.ps1 -Demo
 ```
 
